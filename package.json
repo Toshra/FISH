@@ -1,0 +1,39 @@
+{
+  "name": "grow-and-build",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "typecheck": "tsc -b --pretty false",
+    "lint": "eslint .",
+    "test": "vitest run src",
+    "test:rules": "firebase emulators:exec --only firestore --project grow-build-local \"vitest run tests/firestore.rules.test.ts\"",
+    "emulators": "firebase emulators:start --only auth,firestore --project grow-build-local",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "latest",
+    "firebase": "^13.1.0",
+    "react": "latest",
+    "react-dom": "latest",
+    "react-router": "latest",
+    "typescript": "latest",
+    "vite": "latest"
+  },
+  "devDependencies": {
+    "@eslint/js": "latest",
+    "@firebase/rules-unit-testing": "^6.0.0",
+    "@types/node": "latest",
+    "@types/react": "latest",
+    "@types/react-dom": "latest",
+    "eslint": "latest",
+    "eslint-plugin-react-hooks": "latest",
+    "eslint-plugin-react-refresh": "latest",
+    "firebase-tools": "^15.34.1",
+    "globals": "latest",
+    "typescript-eslint": "latest",
+    "vitest": "^5.0.5"
+  }
+}

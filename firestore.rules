@@ -1,0 +1,316 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedInAs(uid) { return request.auth != null && request.auth.uid == uid; }
+    function classPath(uid, classId) { return /databases/$(database)/documents/teachers/$(uid)/classes/$(classId); }
+    function classOwned(uid, classId) { return signedInAs(uid) && get(classPath(uid, classId)).data.ownerId == uid; }
+    function classActive(uid, classId) { return classOwned(uid, classId) && get(classPath(uid, classId)).data.archivedAt == null; }
+    function activityPath(uid, classId, activityId) { return /databases/$(database)/documents/teachers/$(uid)/classes/$(classId)/activities/$(activityId); }
+    function activityActive(uid, classId, activityId) { return classActive(uid, classId) && get(activityPath(uid, classId, activityId)).data.status == 'active'; }
+    function challengePath(uid, classId, challengeId) { return /databases/$(database)/documents/teachers/$(uid)/classes/$(classId)/challenges/$(challengeId); }
+    function challengeActive(uid, classId, challengeId) { return classActive(uid, classId) && get(challengePath(uid, classId, challengeId)).data.status == 'active'; }
+    function validText(value, max) { return value is string && value.size() > 0 && value.size() <= max; }
+    function validOptionalText(value, max) { return value is string && value.size() <= max; }
+    function validReason(reason) {
+      return validText(reason.id, 80) && validText(reason.label, 120)
+        && reason.points is int && reason.points > 0 && reason.points <= 10
+        && reason.active is bool;
+    }
+    function validThresholds(items) {
+      return items is list && items.size() == 5
+        && items[0].points == 0
+        && items[1].points is int && items[1].points > items[0].points
+        && items[2].points is int && items[2].points > items[1].points
+        && items[3].points is int && items[3].points > items[2].points
+        && items[4].points is int && items[4].points > items[3].points;
+    }
+    function validClass(uid) {
+      return request.resource.data.ownerId == uid
+        && validText(request.resource.data.name, 80)
+        && validOptionalText(request.resource.data.subject, 80)
+        && validOptionalText(request.resource.data.grade, 80)
+        && (request.resource.data.get('activeActivityId', null) == null || request.resource.data.get('activeActivityId', null) is string)
+        && (request.resource.data.get('activeChallengeId', null) == null || request.resource.data.get('activeChallengeId', null) is string)
+        && validThresholds(request.resource.data.thresholds)
+        && request.resource.data.reasons is list && request.resource.data.reasons.size() == 5
+        && validReason(request.resource.data.reasons[0]) && validReason(request.resource.data.reasons[1])
+        && validReason(request.resource.data.reasons[2]) && validReason(request.resource.data.reasons[3])
+        && validReason(request.resource.data.reasons[4]);
+    }
+    function validStudent(uid, classId) {
+      return request.resource.data.ownerId == uid
+        && request.resource.data.classId == classId
+        && validText(request.resource.data.name, 100)
+        && validText(request.resource.data.displayName, 100)
+        && validOptionalText(request.resource.data.fishName, 40)
+        && request.resource.data.points is int && request.resource.data.points >= 0
+        && request.resource.data.status in ['active', 'inactive'];
+    }
+    function awardAfter(uid, classId) {
+      return getAfter(/databases/$(database)/documents/teachers/$(uid)/classes/$(classId)/awards/$(request.resource.data.lastMutationId));
+    }
+    function reversalAfter(uid, classId) {
+      return getAfter(/databases/$(database)/documents/teachers/$(uid)/classes/$(classId)/reversals/$(request.resource.data.lastMutationId));
+    }
+    function validPointMutation(uid, classId, studentId) {
+      return (awardAfter(uid, classId).data.studentId == studentId
+          && awardAfter(uid, classId).data.ownerId == uid
+          && awardAfter(uid, classId).data.classId == classId
+          && request.resource.data.points == resource.data.points + awardAfter(uid, classId).data.amount)
+        || (reversalAfter(uid, classId).data.studentId == studentId
+          && reversalAfter(uid, classId).data.ownerId == uid
+          && reversalAfter(uid, classId).data.classId == classId
+          && request.resource.data.points == resource.data.points - reversalAfter(uid, classId).data.amount);
+    }
+    function validGroupPointMutation(uid, classId, activityId, groupId) {
+      let award = getAfter(/databases/$(database)/documents/teachers/$(uid)/classes/$(classId)/activities/$(activityId)/groupAwards/$(request.resource.data.lastMutationId));
+      let reversal = getAfter(/databases/$(database)/documents/teachers/$(uid)/classes/$(classId)/activities/$(activityId)/groupReversals/$(request.resource.data.lastMutationId));
+      return (award.data.groupId == groupId && award.data.ownerId == uid
+          && request.resource.data.points == resource.data.points + award.data.amount)
+        || (reversal.data.groupId == groupId && reversal.data.ownerId == uid
+          && request.resource.data.points == resource.data.points - reversal.data.amount);
+    }
+    function validGroupMembership(uid, classId, activityId) {
+      return request.resource.data.memberIds is list
+        && request.resource.data.memberIds.toSet().size() == request.resource.data.memberIds.size()
+        && request.resource.data.memberIds.hasOnly(get(activityPath(uid, classId, activityId)).data.participantIds);
+    }
+    function validDecorationSelection() {
+      let selections = request.resource.data.decorationSelections;
+      let entitlement = request.resource.data.points < 50 ? 0 : 1 + ((request.resource.data.points - 50) / 10);
+      return selections is list && selections.toSet().size() == selections.size()
+        && selections.hasOnly(['paint', 'plants', 'fence', 'path'])
+        && selections.size() <= entitlement;
+    }
+
+    match /teachers/{uid} {
+      allow read, create, update: if signedInAs(uid) && request.resource.data.ownerId == uid;
+      allow delete: if false;
+
+      match /classes/{classId} {
+        allow read: if signedInAs(uid) && resource.data.ownerId == uid;
+        allow create: if signedInAs(uid) && validClass(uid);
+        allow update: if classOwned(uid, classId) && validClass(uid) && request.resource.data.ownerId == resource.data.ownerId
+          && (resource.data.archivedAt == null
+            || (request.resource.data.archivedAt == null
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['archivedAt', 'updatedAt'])))
+          && (request.resource.data.get('activeActivityId', null) == resource.data.get('activeActivityId', null)
+            || (resource.data.get('activeActivityId', null) == null && request.resource.data.get('activeActivityId', null) is string
+              && getAfter(activityPath(uid, classId, request.resource.data.get('activeActivityId', null))).data.status == 'active')
+            || (resource.data.get('activeActivityId', null) is string && request.resource.data.get('activeActivityId', null) == null
+              && getAfter(activityPath(uid, classId, resource.data.get('activeActivityId', null))).data.status == 'completed'))
+          && (request.resource.data.get('activeChallengeId', null) == resource.data.get('activeChallengeId', null)
+            || (resource.data.get('activeChallengeId', null) == null && request.resource.data.get('activeChallengeId', null) is string
+              && getAfter(challengePath(uid, classId, request.resource.data.get('activeChallengeId', null))).data.status == 'active')
+            || (resource.data.get('activeChallengeId', null) is string && request.resource.data.get('activeChallengeId', null) == null
+              && getAfter(challengePath(uid, classId, resource.data.get('activeChallengeId', null))).data.status == 'ended'));
+        allow delete: if false;
+
+        match /students/{studentId} {
+          allow read: if classOwned(uid, classId);
+          allow create: if classActive(uid, classId) && validStudent(uid, classId) && request.resource.data.points == 0 && request.resource.data.lastMutationId == '';
+          allow update: if classActive(uid, classId) && validStudent(uid, classId)
+            && request.resource.data.ownerId == resource.data.ownerId
+            && request.resource.data.classId == resource.data.classId
+            && ((request.resource.data.points == resource.data.points && request.resource.data.lastMutationId == resource.data.lastMutationId)
+              || validPointMutation(uid, classId, studentId));
+          allow delete: if false;
+        }
+
+        match /awards/{awardId} {
+          allow read: if classOwned(uid, classId);
+          allow create: if classActive(uid, classId)
+            && request.resource.data.ownerId == uid && request.resource.data.classId == classId
+            && request.resource.data.studentId is string
+            && request.resource.data.amount is int && request.resource.data.amount > 0 && request.resource.data.amount <= 10
+            && validText(request.resource.data.reasonId, 80) && validText(request.resource.data.reasonLabel, 120)
+            && request.resource.data.reversedBy == null
+            && getAfter(/databases/$(database)/documents/teachers/$(uid)/classes/$(classId)/students/$(request.resource.data.studentId)).data.lastMutationId == awardId;
+          allow update: if classActive(uid, classId)
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['reversedBy'])
+            && resource.data.reversedBy == null
+            && request.resource.data.reversedBy is string
+            && getAfter(/databases/$(database)/documents/teachers/$(uid)/classes/$(classId)/reversals/$(request.resource.data.reversedBy)).data.awardId == awardId;
+          allow delete: if false;
+        }
+
+        match /reversals/{reversalId} {
+          allow read: if classOwned(uid, classId);
+          allow create: if classActive(uid, classId)
+            && request.resource.data.ownerId == uid && request.resource.data.classId == classId
+            && request.resource.data.amount is int && request.resource.data.amount > 0
+            && getAfter(/databases/$(database)/documents/teachers/$(uid)/classes/$(classId)/awards/$(request.resource.data.awardId)).data.reversedBy == reversalId
+            && getAfter(/databases/$(database)/documents/teachers/$(uid)/classes/$(classId)/students/$(request.resource.data.studentId)).data.lastMutationId == reversalId;
+          allow update, delete: if false;
+        }
+
+        match /groupingTemplates/{templateId} {
+          allow read: if classOwned(uid, classId);
+          allow create: if classActive(uid, classId) && request.resource.data.ownerId == uid
+            && request.resource.data.classId == classId && validText(request.resource.data.name, 100)
+            && request.resource.data.groups is list;
+          allow update, delete: if false;
+        }
+
+        match /activities/{activityId} {
+          allow read: if classOwned(uid, classId);
+          allow create: if classActive(uid, classId)
+            && request.resource.data.ownerId == uid && request.resource.data.classId == classId
+            && validText(request.resource.data.title, 100) && request.resource.data.status == 'active'
+            && request.resource.data.participantIds is list && request.resource.data.participantIds.size() > 0
+            && request.resource.data.participantIds.toSet().size() == request.resource.data.participantIds.size()
+            && request.resource.data.groupIds is list && request.resource.data.groupIds.size() > 0
+            && getAfter(classPath(uid, classId)).data.activeActivityId == activityId;
+          allow update: if classOwned(uid, classId) && request.resource.data.ownerId == uid
+            && request.resource.data.classId == classId
+            && ((resource.data.status == 'active' && request.resource.data.status == 'completed'
+                && request.resource.data.completionRequestId is string
+                && getAfter(classPath(uid, classId)).data.activeActivityId == null)
+              || (resource.data.status == request.resource.data.status
+                && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['title'])));
+          allow delete: if false;
+
+          match /groups/{groupId} {
+            allow read: if classOwned(uid, classId);
+            allow create: if classActive(uid, classId)
+              && getAfter(activityPath(uid, classId, activityId)).data.status == 'active'
+              && request.resource.data.ownerId == uid && request.resource.data.classId == classId
+              && request.resource.data.activityId == activityId && request.resource.data.points == 0
+              && request.resource.data.lastMutationId == '' && request.resource.data.memberIds is list
+              && request.resource.data.memberIds.toSet().size() == request.resource.data.memberIds.size()
+              && request.resource.data.memberIds.hasOnly(getAfter(activityPath(uid, classId, activityId)).data.participantIds)
+              && request.resource.data.decorationSelections.size() == 0;
+            allow update: if classOwned(uid, classId) && request.resource.data.ownerId == uid
+              && request.resource.data.classId == classId && request.resource.data.activityId == activityId
+              && request.resource.data.points is int && request.resource.data.points >= 0
+              && ((activityActive(uid, classId, activityId) && validGroupMembership(uid, classId, activityId)
+                  && request.resource.data.points == resource.data.points
+                  && request.resource.data.lastMutationId == resource.data.lastMutationId
+                  && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'memberIds', 'updatedAt']))
+                || (activityActive(uid, classId, activityId) && validDecorationSelection()
+                  && request.resource.data.points == resource.data.points
+                  && request.resource.data.lastMutationId == resource.data.lastMutationId
+                  && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['decorationSelections', 'updatedAt']))
+                || (getAfter(activityPath(uid, classId, activityId)).data.status == 'completed'
+                  && request.resource.data.finalMemberIds == resource.data.memberIds
+                  && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['finalMemberIds', 'updatedAt']))
+                || (validGroupPointMutation(uid, classId, activityId, groupId)
+                  && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['points', 'lastMutationId', 'updatedAt'])));
+            allow delete: if false;
+          }
+
+          match /groupAwards/{awardId} {
+            allow read: if classOwned(uid, classId);
+            allow create: if activityActive(uid, classId, activityId)
+              && request.resource.data.ownerId == uid && request.resource.data.classId == classId
+              && request.resource.data.activityId == activityId && request.resource.data.groupId is string
+              && request.resource.data.amount is int && request.resource.data.amount > 0 && request.resource.data.amount <= 10
+              && request.resource.data.reversedBy == null
+              && getAfter(/databases/$(database)/documents/teachers/$(uid)/classes/$(classId)/activities/$(activityId)/groups/$(request.resource.data.groupId)).data.lastMutationId == awardId;
+            allow update: if classOwned(uid, classId)
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['reversedBy'])
+              && resource.data.reversedBy == null && request.resource.data.reversedBy is string
+              && getAfter(/databases/$(database)/documents/teachers/$(uid)/classes/$(classId)/activities/$(activityId)/groupReversals/$(request.resource.data.reversedBy)).data.awardId == awardId;
+            allow delete: if false;
+          }
+
+          match /groupReversals/{reversalId} {
+            allow read: if classOwned(uid, classId);
+            allow create: if classOwned(uid, classId) && request.resource.data.ownerId == uid
+              && request.resource.data.classId == classId && request.resource.data.activityId == activityId
+              && request.resource.data.amount is int && request.resource.data.amount > 0
+              && getAfter(/databases/$(database)/documents/teachers/$(uid)/classes/$(classId)/activities/$(activityId)/groupAwards/$(request.resource.data.awardId)).data.reversedBy == reversalId;
+            allow update, delete: if false;
+          }
+
+          match /membershipEvents/{eventId} {
+            allow read: if classOwned(uid, classId);
+            allow create: if activityActive(uid, classId, activityId)
+              && request.resource.data.ownerId == uid && request.resource.data.classId == classId
+              && request.resource.data.activityId == activityId && request.resource.data.requestKey == eventId
+              && request.resource.data.fromGroupId != request.resource.data.toGroupId
+              && !(request.resource.data.studentId in getAfter(/databases/$(database)/documents/teachers/$(uid)/classes/$(classId)/activities/$(activityId)/groups/$(request.resource.data.fromGroupId)).data.memberIds)
+              && request.resource.data.studentId in getAfter(/databases/$(database)/documents/teachers/$(uid)/classes/$(classId)/activities/$(activityId)/groups/$(request.resource.data.toGroupId)).data.memberIds;
+            allow update, delete: if false;
+          }
+        }
+
+        match /challenges/{challengeId} {
+          allow read: if classOwned(uid, classId);
+          allow create: if classActive(uid, classId)
+            && request.resource.data.ownerId == uid && request.resource.data.classId == classId
+            && validText(request.resource.data.title, 100) && request.resource.data.status == 'active'
+            && request.resource.data.target is int && request.resource.data.target > 0
+            && request.resource.data.mode in ['reason-count', 'distinct-contributors', 'manual']
+            && request.resource.data.reward in ['coral', 'plants', 'treasure', 'background']
+            && request.resource.data.eligibleIds is list && request.resource.data.eligibleIds.size() > 0
+            && request.resource.data.eligibleIds.toSet().size() == request.resource.data.eligibleIds.size()
+            && request.resource.data.rewardActive == false && request.resource.data.rewardSelected == false
+            && request.resource.data.currentProgress == 0
+            && getAfter(classPath(uid, classId)).data.activeChallengeId == challengeId;
+          allow update: if classOwned(uid, classId) && request.resource.data.ownerId == uid
+            && request.resource.data.classId == classId
+            && ((resource.data.status == 'active' && request.resource.data.status == 'ended'
+                && request.resource.data.endRequestId is string
+                && getAfter(classPath(uid, classId)).data.activeChallengeId == null)
+              || (resource.data.status == 'ended' && request.resource.data.status == 'ended'
+                && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['rewardSelected'])
+                && (request.resource.data.rewardSelected == false || resource.data.rewardActive == true))
+              || (challengeActive(uid, classId, challengeId)
+                && ((request.resource.data.diff(resource.data).affectedKeys().hasOnly(['rewardSelected'])
+                    && (request.resource.data.rewardSelected == false || resource.data.rewardActive == true))
+                  || (resource.data.mode == 'manual'
+                    && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['currentProgress', 'rewardActive', 'lastMutationId']))
+                  || (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['eligibleIds', 'contributorIds', 'currentProgress', 'rewardActive', 'lastMutationId']))
+                  || (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['contributorCounts', 'contributorIds', 'currentProgress', 'rewardActive', 'lastMutationId']))
+                  || (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['currentProgress', 'rewardActive', 'lastMutationId'])))));
+          allow delete: if false;
+
+          match /progressEvents/{eventId} {
+            allow read: if classOwned(uid, classId);
+            allow create: if challengeActive(uid, classId, challengeId)
+              && request.resource.data.ownerId == uid && request.resource.data.classId == classId
+              && request.resource.data.challengeId == challengeId
+              && request.resource.data.amount is int && request.resource.data.amount > 0
+              && request.resource.data.reversedBy == null
+              && getAfter(challengePath(uid, classId, challengeId)).data.lastMutationId == eventId;
+            allow update: if classOwned(uid, classId)
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['reversedBy'])
+              && resource.data.reversedBy == null && request.resource.data.reversedBy is string
+              && getAfter(/databases/$(database)/documents/teachers/$(uid)/classes/$(classId)/challenges/$(challengeId)/progressReversals/$(request.resource.data.reversedBy)).data.eventId == eventId;
+            allow delete: if false;
+          }
+
+          match /progressReversals/{reversalId} {
+            allow read: if classOwned(uid, classId);
+            allow create: if classOwned(uid, classId) && request.resource.data.ownerId == uid
+              && request.resource.data.classId == classId && request.resource.data.challengeId == challengeId
+              && request.resource.data.amount is int && request.resource.data.amount > 0
+              && getAfter(/databases/$(database)/documents/teachers/$(uid)/classes/$(classId)/challenges/$(challengeId)/progressEvents/$(request.resource.data.eventId)).data.reversedBy == reversalId;
+            allow update, delete: if false;
+          }
+
+          match /eligibilityEvents/{eventId} {
+            allow read: if classOwned(uid, classId);
+            allow create: if challengeActive(uid, classId, challengeId)
+              && request.resource.data.ownerId == uid && request.resource.data.classId == classId
+              && request.resource.data.challengeId == challengeId
+              && request.resource.data.action in ['add', 'remove']
+              && getAfter(challengePath(uid, classId, challengeId)).data.lastMutationId == eventId;
+            allow update, delete: if false;
+          }
+
+          match /projectionEvents/{eventId} {
+            allow read: if classOwned(uid, classId);
+            allow create: if challengeActive(uid, classId, challengeId)
+              && request.resource.data.ownerId == uid && request.resource.data.classId == classId
+              && request.resource.data.challengeId == challengeId
+              && request.resource.data.sourceType in ['award', 'reversal'];
+            allow update, delete: if false;
+          }
+        }
+      }
+    }
+    match /{document=**} { allow read, write: if false; }
+  }
+}

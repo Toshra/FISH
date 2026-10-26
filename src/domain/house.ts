@@ -1,0 +1,3 @@
+import type { HouseThreshold } from '../types/domain'
+export function getHouseProgress(points:number,thresholds:HouseThreshold[]){if(!Number.isInteger(points)||points<0)throw new Error('Building points must be a nonnegative integer.');let index=0;thresholds.forEach((item,i)=>{if(points>=item.points)index=i});const stage=thresholds[index],next=thresholds[index+1]??null;return{stage,next,percent:next?Math.round((points-stage.points)/(next.points-stage.points)*100):100,decorationEntitlements:points>=50?Math.floor((points-50)/10)+1:0}}
+export function activeDecorations(points:number,selections:string[]){return selections.slice(0,getHouseProgress(points,[{id:'empty',label:'Empty',points:0},{id:'complete',label:'Complete',points:50}]).decorationEntitlements)}

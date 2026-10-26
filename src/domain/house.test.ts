@@ -1,0 +1,4 @@
+import { describe,expect,it } from 'vitest'
+import { getHouseProgress } from './house'
+import { DEFAULT_HOUSE_THRESHOLDS } from '../types/domain'
+describe('house construction',()=>{it.each([[0,'empty'],[4,'empty'],[5,'foundation'],[10,'frame'],[20,'walls'],[30,'roof'],[40,'openings'],[50,'complete']])('maps %i points to %s',(points,stage)=>expect(getHouseProgress(points,DEFAULT_HOUSE_THRESHOLDS).stage.id).toBe(stage));it('earns decorations after completion',()=>{expect(getHouseProgress(50,DEFAULT_HOUSE_THRESHOLDS).decorationEntitlements).toBe(1);expect(getHouseProgress(69,DEFAULT_HOUSE_THRESHOLDS).decorationEntitlements).toBe(2);expect(getHouseProgress(70,DEFAULT_HOUSE_THRESHOLDS).decorationEntitlements).toBe(3)});it('rejects invalid points',()=>expect(()=>getHouseProgress(-1,DEFAULT_HOUSE_THRESHOLDS)).toThrow())})
